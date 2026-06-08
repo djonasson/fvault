@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=fvault
+Comment=Encrypted Folder Vault
+Exec=fvault %f
+Icon=security-high
+MimeType=application/x-fvault;
+Terminal=false
+Categories=Utility;Security;
+StartupNotify=true
