@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-fvault — a GTK 3 desktop app for encrypting folders into single `.vault` files using AES-256-GCM with scrypt key derivation. Python 3.10+, no test suite, no build step.
+fvault — a GTK 3 desktop app for encrypting folders into single `.vault` files using AES-256-GCM with scrypt key derivation. Python 3.10+, no build step.
 
 ## Running
 
@@ -15,7 +15,17 @@ python3 fvault.py /path/to.vault # open a vault directly
 ./uninstall.sh                   # remove system install
 ```
 
-Dependencies: `cryptography>=41.0`, GTK 3 via PyGObject (`python3-gi`, `gir1.2-gtk-3.0`).
+Dependencies: `cryptography>=41.0`, GTK 3 via PyGObject (`python3-gi`, `gir1.2-gtk-3.0`), `pytest` (for tests).
+
+## Testing
+
+```bash
+pytest tests/ -v            # run all tests
+pytest tests/test_crypto.py # run one module
+pytest tests/ -k "round_trip" # run tests matching a pattern
+```
+
+Tests use a session-scoped fixture that patches `crypto.SCRYPT_N` to `2**14` (from the production `2**20`) so the full suite runs in ~3 seconds. Temp dirs and config files are redirected into `tmp_path` via fixtures in `conftest.py` — tests never touch real user directories. GTK-dependent test imports are guarded with `pytest.importorskip("gi")`.
 
 ## Architecture
 
