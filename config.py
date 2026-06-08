@@ -12,10 +12,11 @@ MAX_RECENT = 20
 
 
 def _load() -> dict:
-    if not os.path.exists(CONFIG_FILE):
+    try:
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
         return {"recent_vaults": []}
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
 
 
 def _save(data: dict):

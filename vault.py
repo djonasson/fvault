@@ -13,6 +13,7 @@ import glob
 import io
 import json
 import os
+import shutil
 import struct
 import tarfile
 import tempfile
@@ -67,29 +68,38 @@ def cleanup_stale_temp_dirs():
         pidfile = os.path.join(path, ".fvault.pid")
         if os.path.exists(pidfile):
             try:
-                pid = int(open(pidfile).read().strip())
+                with open(pidfile) as pf:
+                    pid = int(pf.read().strip())
                 os.kill(pid, 0)  # check if process is alive (signal 0)
                 continue  # process is still running, skip
             except (ValueError, OSError, ProcessLookupError):
                 pass  # PID invalid or process dead — stale dir
         # No pidfile or stale PID — clean it up
-        import shutil
         shutil.rmtree(path, ignore_errors=True)
 
 
 def cleanup_active_temp_dirs():
     """Remove all temp dirs created by THIS process. Called by atexit/signal."""
-    import shutil
     for path in list(_active_temp_dirs):
-        if os.path.exists(path):
-            shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path, ignore_errors=True)
         _active_temp_dirs.discard(path)
 
 
-def _count_files(folder_path: str) -> int:
+def release_temp_dir(temp_dir: str):
+    """Remove a temp dir and untrack it. Called when a vault is locked/closed."""
+    if temp_dir:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        _active_temp_dirs.discard(temp_dir)
+
+
+_INTERNAL_FILES = {".fvault.pid"}
+
+
+def count_files(folder_path: str) -> int:
+    """Count files in a directory tree, excluding fvault internal files."""
     count = 0
     for _, _, files in os.walk(folder_path):
-        count += len(files)
+        count += sum(1 for f in files if f not in _INTERNAL_FILES)
     return count
 
 
@@ -97,6 +107,8 @@ def _tar_folder(folder_path: str) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for entry in sorted(os.listdir(folder_path)):
+            if entry in _INTERNAL_FILES:
+                continue
             tar.add(os.path.join(folder_path, entry), arcname=entry)
     return buf.getvalue()
 
@@ -107,13 +119,26 @@ def _untar_to(data: bytes, dest: str):
         tar.extractall(dest, filter="data")
 
 
+def _write_vault(path: str, salt: bytes, nonce: bytes,
+                 meta_bytes: bytes, ciphertext: bytes):
+    """Write vault binary format to a file with restrictive permissions."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(MAGIC)
+        f.write(salt)
+        f.write(nonce)
+        f.write(struct.pack(">I", len(meta_bytes)))
+        f.write(meta_bytes)
+        f.write(ciphertext)
+
+
 def create_vault(folder_path: str, vault_path: str, password: str):
     """Encrypt a folder into a .vault file."""
     folder_path = os.path.abspath(folder_path)
     if not os.path.isdir(folder_path):
         raise ValueError(f"Not a directory: {folder_path}")
 
-    file_count = _count_files(folder_path)
+    file_count = count_files(folder_path)
     metadata = {
         "version": CURRENT_VERSION,
         "created": datetime.now(timezone.utc).isoformat(),
@@ -129,14 +154,7 @@ def create_vault(folder_path: str, vault_path: str, password: str):
     finally:
         crypto.wipe(pw_buf)
 
-    fd = os.open(vault_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(MAGIC)
-        f.write(salt)
-        f.write(nonce)
-        f.write(struct.pack(">I", len(meta_bytes)))
-        f.write(meta_bytes)
-        f.write(ciphertext)
+    _write_vault(vault_path, salt, nonce, meta_bytes, ciphertext)
 
 
 def _read_header(f) -> tuple[bytes, bytes, bytes]:
@@ -212,13 +230,13 @@ def save_vault(temp_dir: str, vault_path: str, password: str):
     except (FileNotFoundError, ValueError):
         created = datetime.now(timezone.utc).isoformat()
 
-    file_count = _count_files(temp_dir)
+    file_count = count_files(temp_dir)
     metadata = {
         "version": CURRENT_VERSION,
         "created": created,
         "modified": datetime.now(timezone.utc).isoformat(),
         "files_count": file_count,
-        "folder_name": os.path.basename(vault_path).replace(".vault", ""),
+        "folder_name": os.path.basename(vault_path).removesuffix(".vault"),
     }
     meta_bytes = json.dumps(metadata).encode("utf-8")
 
@@ -231,13 +249,5 @@ def save_vault(temp_dir: str, vault_path: str, password: str):
 
     # Write to temp file first, then rename (atomic on same filesystem)
     tmp_vault = vault_path + ".tmp"
-    fd = os.open(tmp_vault, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(MAGIC)
-        f.write(salt)
-        f.write(nonce)
-        f.write(struct.pack(">I", len(meta_bytes)))
-        f.write(meta_bytes)
-        f.write(ciphertext)
-
+    _write_vault(tmp_vault, salt, nonce, meta_bytes, ciphertext)
     os.replace(tmp_vault, vault_path)

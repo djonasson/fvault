@@ -10,7 +10,7 @@ import threading
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, GLib, Gio
+from gi.repository import Gtk, Gdk, GLib, Gio, Pango
 
 import config
 import crypto
@@ -141,7 +141,7 @@ class FVaultWindow(Gtk.ApplicationWindow):
 
                 path_label = Gtk.Label(label=path, xalign=0)
                 path_label.get_style_context().add_class("dim-label")
-                path_label.set_ellipsize(2)  # PANGO_ELLIPSIZE_END
+                path_label.set_ellipsize(Pango.EllipsizeMode.END)
                 vbox.pack_start(path_label, False, False, 0)
 
                 box.pack_start(vbox, True, True, 0)
@@ -481,13 +481,23 @@ class FVaultWindow(Gtk.ApplicationWindow):
 
         self._run_with_spinner("Saving...", do_save, on_done)
 
+    def _prompt_save_if_needed(self) -> str:
+        """If vault is modified, ask user to save/discard/cancel. Returns choice.
+
+        Returns 'save', 'discard', or 'cancel'. Returns 'discard' if not modified.
+        When 'save' is chosen, the vault is saved synchronously before returning.
+        """
+        if not self.modified:
+            return "discard"
+        choice = save_changes_dialog(self)
+        if choice == "save":
+            vault.save_vault(self.temp_dir, self.vault_path, self.password)
+        return choice
+
     def _on_lock(self, btn=None):
-        if self.modified:
-            choice = save_changes_dialog(self)
-            if choice == "cancel":
-                return
-            elif choice == "save":
-                vault.save_vault(self.temp_dir, self.vault_path, self.password)
+        choice = self._prompt_save_if_needed()
+        if choice == "cancel":
+            return
 
         self._cleanup_temp()
         self.vault_path = None
@@ -500,19 +510,15 @@ class FVaultWindow(Gtk.ApplicationWindow):
 
     def _on_window_close(self, widget, event):
         if self.vault_path and self.temp_dir:
-            if self.modified:
-                choice = save_changes_dialog(self)
-                if choice == "cancel":
-                    return True  # prevent close
-                elif choice == "save":
-                    vault.save_vault(self.temp_dir, self.vault_path, self.password)
+            choice = self._prompt_save_if_needed()
+            if choice == "cancel":
+                return True  # prevent close
             self._cleanup_temp()
         return False  # allow close
 
     def _cleanup_temp(self):
-        if self.temp_dir and os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
-            vault._active_temp_dirs.discard(self.temp_dir)
+        if self.temp_dir:
+            vault.release_temp_dir(self.temp_dir)
             self.temp_dir = None
 
     def _run_with_spinner(self, message, task_fn, on_success=None, on_error=None):

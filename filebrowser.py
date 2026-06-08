@@ -2,12 +2,15 @@
 
 import os
 import shutil
+import stat as stat_module
 import subprocess
 import time
 
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, Gio, GLib, Pango
+
+from dialogs import confirm_dialog, error_dialog
 
 
 def _format_size(size: int) -> str:
@@ -22,12 +25,19 @@ def _format_time(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
-def _get_icon_for_path(path: str) -> Gio.Icon:
-    if os.path.isdir(path):
+def _get_icon_for_path(path: str, is_dir: bool) -> Gio.Icon:
+    if is_dir:
         return Gio.ThemedIcon.new("folder")
     content_type, _ = Gio.content_type_guess(path, None)
-    icon = Gio.content_type_get_icon(content_type)
-    return icon
+    return Gio.content_type_get_icon(content_type)
+
+
+def _copy_item(src: str, dest: str):
+    """Copy a file or directory to dest."""
+    if os.path.isdir(src):
+        shutil.copytree(src, dest)
+    else:
+        shutil.copy2(src, dest)
 
 
 class FileBrowser(Gtk.Box):
@@ -187,14 +197,14 @@ class FileBrowser(Gtk.Box):
         for name in entries:
             full = os.path.join(self.current_path, name)
             try:
-                stat = os.stat(full)
+                st = os.stat(full)
             except OSError:
                 continue
-            is_dir = os.path.isdir(full)
-            icon = _get_icon_for_path(full)
-            size_str = "" if is_dir else _format_size(stat.st_size)
-            mod_str = _format_time(stat.st_mtime)
-            raw_size = 0 if is_dir else stat.st_size
+            is_dir = stat_module.S_ISDIR(st.st_mode)
+            icon = _get_icon_for_path(full, is_dir)
+            size_str = "" if is_dir else _format_size(st.st_size)
+            mod_str = _format_time(st.st_mtime)
+            raw_size = 0 if is_dir else st.st_size
             row = (icon, name, size_str, mod_str, full, is_dir, raw_size)
             if is_dir:
                 dirs.append(row)
@@ -279,10 +289,7 @@ class FileBrowser(Gtk.Box):
         if dialog.run() == Gtk.ResponseType.OK:
             for uri in dialog.get_filenames():
                 dest = os.path.join(self.current_path, os.path.basename(uri))
-                if os.path.isdir(uri):
-                    shutil.copytree(uri, dest)
-                else:
-                    shutil.copy2(uri, dest)
+                _copy_item(uri, dest)
             self.refresh()
             self._notify_modified()
         dialog.destroy()
@@ -384,7 +391,6 @@ class FileBrowser(Gtk.Box):
         if len(names) > 5:
             msg = "\n".join(names[:5]) + f"\n... and {len(names) - 5} more"
 
-        from dialogs import confirm_dialog
         if not confirm_dialog(
             self.get_toplevel(),
             f"Delete {len(selected)} item(s)?",
@@ -413,16 +419,10 @@ class FileBrowser(Gtk.Box):
         if dialog.run() == Gtk.ResponseType.OK:
             dest = dialog.get_filename()
             try:
-                # Copy all contents from root, not just current dir
                 for item in os.listdir(self.root_path):
                     src = os.path.join(self.root_path, item)
                     dst = os.path.join(dest, item)
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
-                from dialogs import error_dialog
-                # Reuse error_dialog for info (it's just a message box)
+                    _copy_item(src, dst)
                 dlg = Gtk.MessageDialog(
                     transient_for=self.get_toplevel(), modal=True,
                     message_type=Gtk.MessageType.INFO,
@@ -433,7 +433,6 @@ class FileBrowser(Gtk.Box):
                 dlg.run()
                 dlg.destroy()
             except Exception as e:
-                from dialogs import error_dialog
                 error_dialog(self.get_toplevel(), "Extraction failed", str(e))
         dialog.destroy()
 
@@ -445,15 +444,10 @@ class FileBrowser(Gtk.Box):
             if uri.startswith("file://"):
                 path = GLib.filename_from_uri(uri)[0]
                 dest = os.path.join(self.current_path, os.path.basename(path))
-                if os.path.isdir(path):
-                    shutil.copytree(path, dest)
-                else:
-                    shutil.copy2(path, dest)
+                _copy_item(path, dest)
         self.refresh()
         self._notify_modified()
 
     def count_all_files(self) -> int:
-        count = 0
-        for _, _, files in os.walk(self.root_path):
-            count += len(files)
-        return count
+        import vault
+        return vault.count_files(self.root_path)
