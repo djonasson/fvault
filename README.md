@@ -171,14 +171,14 @@ The **metadata** is a JSON object stored in cleartext (it contains no sensitive 
 }
 ```
 
-The **encrypted payload** is a gzip-compressed tar archive of the folder contents, encrypted as a single AES-256-GCM blob. The last 16 bytes of the payload are the GCM authentication tag.
+The **encrypted payload** is a gzip-compressed tar archive of the folder contents, encrypted as a single AES-256-GCM blob. The last 16 bytes of the payload are the GCM authentication tag. The raw metadata bytes are passed as **Associated Authenticated Data (AAD)** to AES-GCM, meaning the metadata is integrity-protected even though it is stored in cleartext. Tampering with the metadata will cause decryption to fail.
 
 ### Key derivation
 
 The encryption key is derived from the password using scrypt:
 
 ```
-key = scrypt(password, salt, N=1048576, r=8, p=1, key_length=32)
+key = scrypt(password_utf8, salt, N=1048576, r=8, p=1, key_length=32)
 ```
 
 This produces a 256-bit key. The high cost factor (N=2^20) makes brute-force attacks expensive.
@@ -226,8 +226,8 @@ def recover(vault_path, output_dir):
         salt = f.read(16)           # 16-byte salt
         nonce = f.read(12)          # 12-byte nonce
         meta_len = struct.unpack(">I", f.read(4))[0]
-        metadata = f.read(meta_len) # JSON metadata (skip)
-        ciphertext = f.read()       # everything else is the encrypted tar.gz
+        metadata = f.read(meta_len) # raw metadata bytes (used as AAD)
+        ciphertext = f.read()       # encrypted tar.gz
 
     # 2. Show metadata
     meta = json.loads(metadata)
@@ -244,10 +244,10 @@ def recover(vault_path, output_dir):
     kdf = Scrypt(salt=salt, length=32, n=2**20, r=8, p=1)
     key = kdf.derive(password.encode("utf-8"))
 
-    # 5. Decrypt with AES-256-GCM
+    # 5. Decrypt with AES-256-GCM (metadata bytes are the AAD)
     try:
         aesgcm = AESGCM(key)
-        tar_data = aesgcm.decrypt(nonce, ciphertext, None)
+        tar_data = aesgcm.decrypt(nonce, ciphertext, metadata)
     except Exception:
         print("ERROR: Wrong password or corrupted vault.")
         sys.exit(1)
@@ -256,12 +256,9 @@ def recover(vault_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     buf = io.BytesIO(tar_data)
     with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-        # Safety: skip entries with absolute paths or path traversal
-        safe = [m for m in tar.getmembers()
-                if not m.name.startswith("/") and ".." not in m.name]
-        tar.extractall(output_dir, members=safe)
+        tar.extractall(output_dir, filter="data")
 
-    print(f"Recovered {len(safe)} entries to: {output_dir}")
+    print(f"Recovered to: {output_dir}")
 
 
 if __name__ == "__main__":
@@ -292,19 +289,19 @@ assert f.read(8) == b"FVAULT\x01\x00"    # magic
 salt = f.read(16)                          # salt
 nonce = f.read(12)                         # nonce
 meta_len = struct.unpack(">I", f.read(4))[0]
-f.read(meta_len)                           # skip metadata
+metadata = f.read(meta_len)               # keep — needed as AAD for decrypt
 ciphertext = f.read()
 f.close()
 
-# Derive key and decrypt
+# Derive key and decrypt (metadata is the AAD)
 password = getpass.getpass()
 kdf = Scrypt(salt=salt, length=32, n=1048576, r=8, p=1)
 key = kdf.derive(password.encode("utf-8"))
-tar_data = AESGCM(key).decrypt(nonce, ciphertext, None)
+tar_data = AESGCM(key).decrypt(nonce, ciphertext, metadata)
 
 # Extract
 with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as tar:
-    tar.extractall("./recovered")
+    tar.extractall("./recovered", filter="data")
 ```
 
 ### Recovery with OpenSSL (no Python)
@@ -314,11 +311,11 @@ If Python is also unavailable, the vault can be recovered using any tool that su
 1. Read bytes 8-23 as the **salt** (16 bytes, hex-encode for CLI tools)
 2. Read bytes 24-35 as the **nonce/IV** (12 bytes)
 3. Read bytes 36-39 as a big-endian uint32 giving the **metadata length** N
-4. Skip N bytes of metadata (starting at byte 40)
+4. Read N bytes of **metadata** starting at byte 40 — this is the **AAD** (Associated Authenticated Data) required for decryption
 5. Everything from byte 40+N to the end of the file is the **ciphertext** (last 16 bytes are the GCM auth tag)
 6. Derive the key: `scrypt(password_utf8, salt, N=1048576, r=8, p=1, dkLen=32)`
-7. Decrypt: `AES-256-GCM(key, nonce, ciphertext, no_aad)`
-8. The result is a gzip-compressed tar archive -- decompress and extract
+7. Decrypt: `AES-256-GCM(key, nonce, ciphertext, aad=metadata_bytes)`
+8. The result is a gzip-compressed tar archive — decompress and extract
 
 Example extracting the raw components with `dd` and `xxd`:
 
@@ -333,11 +330,14 @@ dd if=my.vault bs=1 skip=24 count=12 2>/dev/null | xxd -p
 dd if=my.vault bs=1 skip=36 count=4 2>/dev/null | xxd -p
 # Convert hex to decimal to get N
 
+# Extract metadata / AAD (N bytes starting at byte 40)
+dd if=my.vault bs=1 skip=40 count=$N 2>/dev/null > metadata.bin
+
 # Extract ciphertext (from byte 40+N to EOF)
 dd if=my.vault bs=1 skip=$((40 + N)) 2>/dev/null > encrypted.bin
 ```
 
-From there, use any language or tool that supports scrypt + AES-256-GCM to decrypt `encrypted.bin`, then decompress the result with `tar xzf`.
+From there, use any language or tool that supports scrypt + AES-256-GCM to decrypt `encrypted.bin` with `metadata.bin` as the AAD, then decompress the result with `tar xzf`.
 
 ## Configuration
 

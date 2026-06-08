@@ -569,7 +569,7 @@ def main():
 
     # Register cleanup for crashes / unexpected exits
     atexit.register(vault.cleanup_active_temp_dirs)
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, _signal_cleanup)
 
     app = FVaultApp()

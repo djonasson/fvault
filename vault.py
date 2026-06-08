@@ -22,14 +22,28 @@ import crypto
 
 MAGIC = b"FVAULT\x01\x00"
 HEADER_SIZE = len(MAGIC)  # 8
+META_MAX_SIZE = 1024 * 1024  # 1 MB — far more than any real metadata needs
 
 # Track all temp dirs created by this process for cleanup on crash
 _active_temp_dirs: set[str] = set()
 
 
 def _get_temp_base() -> str | None:
-    """Return the directory where fvault temp dirs are created."""
-    return os.environ.get("XDG_RUNTIME_DIR")
+    """Return the directory where fvault temp dirs are created.
+
+    Prefers XDG_RUNTIME_DIR (typically a user-private tmpfs).
+    Falls back to /tmp with a warning.
+    """
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir and os.path.isdir(runtime_dir):
+        return runtime_dir
+    import warnings
+    warnings.warn(
+        "XDG_RUNTIME_DIR is not set. Decrypted files will be written to /tmp "
+        "which may not be a tmpfs — data could persist on disk after deletion.",
+        stacklevel=2,
+    )
+    return None
 
 
 def cleanup_stale_temp_dirs():
@@ -84,13 +98,7 @@ def _tar_folder(folder_path: str) -> bytes:
 def _untar_to(data: bytes, dest: str):
     buf = io.BytesIO(data)
     with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-        # Security: filter out absolute paths and path traversal
-        members = []
-        for m in tar.getmembers():
-            if m.name.startswith("/") or ".." in m.name:
-                continue
-            members.append(m)
-        tar.extractall(dest, members=members)
+        tar.extractall(dest, filter="data")
 
 
 def create_vault(folder_path: str, vault_path: str, password: str):
@@ -108,10 +116,15 @@ def create_vault(folder_path: str, vault_path: str, password: str):
     }
     meta_bytes = json.dumps(metadata).encode("utf-8")
 
-    tar_data = _tar_folder(folder_path)
-    salt, nonce, ciphertext = crypto.encrypt(tar_data, password)
+    pw_buf = bytearray(password.encode("utf-8"))
+    try:
+        tar_data = _tar_folder(folder_path)
+        salt, nonce, ciphertext = crypto.encrypt(tar_data, pw_buf, aad=meta_bytes)
+    finally:
+        crypto.wipe(pw_buf)
 
-    with open(vault_path, "wb") as f:
+    fd = os.open(vault_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
         f.write(MAGIC)
         f.write(salt)
         f.write(nonce)
@@ -120,16 +133,24 @@ def create_vault(folder_path: str, vault_path: str, password: str):
         f.write(ciphertext)
 
 
+def _read_header(f) -> tuple[bytes, bytes, bytes]:
+    """Read and validate vault header. Returns (salt, nonce, meta_bytes)."""
+    magic = f.read(HEADER_SIZE)
+    if magic != MAGIC:
+        raise ValueError("Not a valid vault file")
+    salt = f.read(16)
+    nonce = f.read(12)
+    meta_len = struct.unpack(">I", f.read(4))[0]
+    if meta_len > META_MAX_SIZE:
+        raise ValueError(f"Metadata too large ({meta_len} bytes) — file may be corrupt")
+    meta_bytes = f.read(meta_len)
+    return salt, nonce, meta_bytes
+
+
 def get_vault_info(vault_path: str) -> dict:
     """Read vault metadata without decrypting."""
     with open(vault_path, "rb") as f:
-        magic = f.read(HEADER_SIZE)
-        if magic != MAGIC:
-            raise ValueError("Not a valid vault file")
-        f.read(16)  # salt
-        f.read(12)  # nonce
-        meta_len = struct.unpack(">I", f.read(4))[0]
-        meta_bytes = f.read(meta_len)
+        _, _, meta_bytes = _read_header(f)
 
     metadata = json.loads(meta_bytes)
     metadata["file_size"] = os.path.getsize(vault_path)
@@ -139,16 +160,14 @@ def get_vault_info(vault_path: str) -> dict:
 def open_vault(vault_path: str, password: str) -> str:
     """Decrypt a vault to a temp directory. Returns the temp dir path."""
     with open(vault_path, "rb") as f:
-        magic = f.read(HEADER_SIZE)
-        if magic != MAGIC:
-            raise ValueError("Not a valid vault file")
-        salt = f.read(16)
-        nonce = f.read(12)
-        meta_len = struct.unpack(">I", f.read(4))[0]
-        f.read(meta_len)  # skip metadata
+        salt, nonce, meta_bytes = _read_header(f)
         ciphertext = f.read()
 
-    tar_data = crypto.decrypt(salt, nonce, ciphertext, password)
+    pw_buf = bytearray(password.encode("utf-8"))
+    try:
+        tar_data = crypto.decrypt(salt, nonce, ciphertext, pw_buf, aad=meta_bytes)
+    finally:
+        crypto.wipe(pw_buf)
 
     runtime_dir = _get_temp_base()
     temp_dir = tempfile.mkdtemp(prefix="fvault-", dir=runtime_dir)
@@ -182,12 +201,17 @@ def save_vault(temp_dir: str, vault_path: str, password: str):
     }
     meta_bytes = json.dumps(metadata).encode("utf-8")
 
-    tar_data = _tar_folder(temp_dir)
-    salt, nonce, ciphertext = crypto.encrypt(tar_data, password)
+    pw_buf = bytearray(password.encode("utf-8"))
+    try:
+        tar_data = _tar_folder(temp_dir)
+        salt, nonce, ciphertext = crypto.encrypt(tar_data, pw_buf, aad=meta_bytes)
+    finally:
+        crypto.wipe(pw_buf)
 
     # Write to temp file first, then rename (atomic on same filesystem)
     tmp_vault = vault_path + ".tmp"
-    with open(tmp_vault, "wb") as f:
+    fd = os.open(tmp_vault, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
         f.write(MAGIC)
         f.write(salt)
         f.write(nonce)

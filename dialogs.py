@@ -5,6 +5,9 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 
+MIN_PASSWORD_LENGTH = 8
+
+
 class PasswordDialog(Gtk.Dialog):
     """Password entry dialog with optional confirmation field."""
 
@@ -65,6 +68,12 @@ class PasswordDialog(Gtk.Dialog):
             pw = self.password_entry.get_text()
             if not pw:
                 self._show_error("Password cannot be empty")
+                continue
+
+            if self.confirm_entry and len(pw) < MIN_PASSWORD_LENGTH:
+                self._show_error(
+                    f"Password must be at least {MIN_PASSWORD_LENGTH} characters"
+                )
                 continue
 
             if self.confirm_entry:
