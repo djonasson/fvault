@@ -23,6 +23,12 @@ import crypto
 MAGIC = b"FVAULT\x01\x00"
 HEADER_SIZE = len(MAGIC)  # 8
 META_MAX_SIZE = 1024 * 1024  # 1 MB — far more than any real metadata needs
+CURRENT_VERSION = 2  # v2: metadata authenticated as AAD in AES-GCM
+
+
+class IncompatibleVaultError(Exception):
+    """Raised when a vault was created with an incompatible format version."""
+    pass
 
 # Track all temp dirs created by this process for cleanup on crash
 _active_temp_dirs: set[str] = set()
@@ -109,7 +115,7 @@ def create_vault(folder_path: str, vault_path: str, password: str):
 
     file_count = _count_files(folder_path)
     metadata = {
-        "version": 1,
+        "version": CURRENT_VERSION,
         "created": datetime.now(timezone.utc).isoformat(),
         "files_count": file_count,
         "folder_name": os.path.basename(folder_path),
@@ -163,6 +169,21 @@ def open_vault(vault_path: str, password: str) -> str:
         salt, nonce, meta_bytes = _read_header(f)
         ciphertext = f.read()
 
+    meta = json.loads(meta_bytes)
+    vault_version = meta.get("version", 1)
+    if vault_version < CURRENT_VERSION:
+        raise IncompatibleVaultError(
+            f"This vault was created with format version {vault_version} "
+            f"and cannot be opened by this version of fvault (requires version "
+            f"{CURRENT_VERSION}). Recreate the vault or use the original version "
+            f"of fvault that created it to recover the files."
+        )
+    if vault_version > CURRENT_VERSION:
+        raise IncompatibleVaultError(
+            f"This vault was created with a newer format (version {vault_version}). "
+            f"Update fvault to open it."
+        )
+
     pw_buf = bytearray(password.encode("utf-8"))
     try:
         tar_data = crypto.decrypt(salt, nonce, ciphertext, pw_buf, aad=meta_bytes)
@@ -193,7 +214,7 @@ def save_vault(temp_dir: str, vault_path: str, password: str):
 
     file_count = _count_files(temp_dir)
     metadata = {
-        "version": 1,
+        "version": CURRENT_VERSION,
         "created": created,
         "modified": datetime.now(timezone.utc).isoformat(),
         "files_count": file_count,

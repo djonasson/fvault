@@ -163,7 +163,7 @@ The **metadata** is a JSON object stored in cleartext (it contains no sensitive 
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "created": "2026-06-08T12:00:00+00:00",
   "modified": "2026-06-08T13:30:00+00:00",
   "files_count": 42,

@@ -406,6 +406,34 @@ class FVaultWindow(Gtk.ApplicationWindow):
             self._refresh_recent()
             return
 
+        # Check vault version before asking for password
+        try:
+            info = vault.get_vault_info(vault_path)
+            v = info.get("version", 1)
+            if v != vault.CURRENT_VERSION:
+                if v < vault.CURRENT_VERSION:
+                    error_dialog(
+                        self, "Incompatible vault",
+                        f"This vault uses format version {v}, which is no longer "
+                        f"supported (current: {vault.CURRENT_VERSION}).\n\n"
+                        f"Recreate the vault with this version of fvault, or use "
+                        f"the original version that created it to recover the files."
+                    )
+                else:
+                    error_dialog(
+                        self, "Newer vault format",
+                        f"This vault uses format version {v}, but this version of "
+                        f"fvault only supports version {vault.CURRENT_VERSION}.\n\n"
+                        f"Update fvault to open it."
+                    )
+                return
+        except vault.IncompatibleVaultError as e:
+            error_dialog(self, "Incompatible vault", str(e))
+            return
+        except Exception as e:
+            error_dialog(self, "Error reading vault", str(e))
+            return
+
         pw_dialog = PasswordDialog(self, f"Unlock {os.path.basename(vault_path)}")
         password = pw_dialog.get_password()
         if password is None:
