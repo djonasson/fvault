@@ -82,6 +82,38 @@ class TestRemoveRecentVault:
         config.remove_recent_vault("/nonexistent/vault.vault")
 
 
+class TestRenameRecentVault:
+    def test_rename(self, tmp_path):
+        old = str(tmp_path / "old.vault")
+        new = str(tmp_path / "new.vault")
+        config.add_recent_vault(old)
+        config.rename_recent_vault(old, new)
+        recents = config.get_recent_vaults()
+        assert new in recents
+        assert old not in recents
+
+    def test_rename_preserves_position(self, tmp_path):
+        p1 = str(tmp_path / "first.vault")
+        p2 = str(tmp_path / "second.vault")
+        p3 = str(tmp_path / "third.vault")
+        config.add_recent_vault(p1)
+        config.add_recent_vault(p2)
+        config.add_recent_vault(p3)
+        # Order: p3, p2, p1
+
+        new_p2 = str(tmp_path / "renamed.vault")
+        config.rename_recent_vault(p2, new_p2)
+        recents = config.get_recent_vaults()
+        assert recents == [p3, new_p2, p1]
+
+    def test_rename_not_present(self, tmp_path):
+        # Should not raise or change anything
+        config.add_recent_vault(str(tmp_path / "existing.vault"))
+        config.rename_recent_vault("/nonexistent.vault", "/new.vault")
+        recents = config.get_recent_vaults()
+        assert len(recents) == 1
+
+
 class TestConfigFileIntegrity:
     def test_file_permissions(self, monkeypatch_config_dir):
         _, cfg_file = monkeypatch_config_dir

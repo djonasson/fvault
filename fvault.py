@@ -158,6 +158,13 @@ class FVaultWindow(Gtk.ApplicationWindow):
                 del_btn.connect("clicked", self._on_delete_recent, path)
                 box.pack_end(del_btn, False, False, 0)
 
+                if exists:
+                    rename_btn = Gtk.Button.new_from_icon_name("document-edit", Gtk.IconSize.BUTTON)
+                    rename_btn.set_tooltip_text("Rename this vault")
+                    rename_btn.set_relief(Gtk.ReliefStyle.NONE)
+                    rename_btn.connect("clicked", self._on_rename_recent, path)
+                    box.pack_end(rename_btn, False, False, 0)
+
                 row.add(box)
                 row.vault_path = path
                 row.set_activatable(exists)
@@ -295,6 +302,61 @@ class FVaultWindow(Gtk.ApplicationWindow):
             self._refresh_recent()
             return
         self._delete_vault_file(vault_path)
+
+    def _on_rename_recent(self, btn, vault_path):
+        """Rename a vault file on disk and update the recent list."""
+        old_name = os.path.basename(vault_path)
+        dlg = Gtk.Dialog(
+            title="Rename Vault",
+            transient_for=self, modal=True,
+        )
+        dlg.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+        )
+        dlg.set_default_response(Gtk.ResponseType.OK)
+
+        box = dlg.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        box.pack_start(Gtk.Label(label="New name:", xalign=0), False, False, 0)
+        entry = Gtk.Entry()
+        entry.set_text(old_name)
+        entry.set_activates_default(True)
+        # Select just the name part, not the .vault extension
+        if old_name.endswith(".vault"):
+            entry.select_region(0, len(old_name) - len(".vault"))
+        else:
+            entry.select_region(0, -1)
+        box.pack_start(entry, False, False, 0)
+        box.show_all()
+
+        if dlg.run() != Gtk.ResponseType.OK:
+            dlg.destroy()
+            return
+
+        new_name = entry.get_text().strip()
+        dlg.destroy()
+
+        if not new_name or new_name == old_name:
+            return
+        if not new_name.endswith(".vault"):
+            new_name += ".vault"
+
+        new_path = os.path.join(os.path.dirname(vault_path), new_name)
+        if os.path.exists(new_path):
+            error_dialog(self, "Rename failed",
+                         f"A file named \"{new_name}\" already exists in that location.")
+            return
+
+        try:
+            os.rename(vault_path, new_path)
+        except OSError as e:
+            error_dialog(self, "Rename failed", str(e))
+            return
+
+        config.rename_recent_vault(vault_path, new_path)
+        self._refresh_recent()
 
     def _on_create_vault(self, btn):
         dialog = Gtk.FileChooserDialog(

@@ -51,3 +51,16 @@ def remove_recent_vault(path: str):
         recents.remove(path)
         data["recent_vaults"] = recents
         _save(data)
+
+
+def rename_recent_vault(old_path: str, new_path: str):
+    """Replace old_path with new_path in the recent list, keeping its position."""
+    old_path = os.path.abspath(old_path)
+    new_path = os.path.abspath(new_path)
+    data = _load()
+    recents = data.get("recent_vaults", [])
+    if old_path in recents:
+        idx = recents.index(old_path)
+        recents[idx] = new_path
+        data["recent_vaults"] = recents
+        _save(data)
