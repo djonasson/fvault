@@ -2,6 +2,11 @@
 
 A self-contained GTK desktop application for encrypting and decrypting folders on Linux. Folders are packed into single `.vault` files using AES-256-GCM encryption with scrypt key derivation. Files can be browsed, opened, edited, added, and removed entirely within the app.
 
+<p align="center">
+  <img src="docs/screenshot.png" width="49%" alt="Home screen">
+  <img src="docs/screenshot2.png" width="49%" alt="File browser">
+</p>
+
 ## Features
 
 - Encrypt any folder into a single password-protected `.vault` file
