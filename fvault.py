@@ -152,6 +152,12 @@ class FVaultWindow(Gtk.ApplicationWindow):
                     missing.get_style_context().add_class("dim-label")
                     box.pack_end(missing, False, False, 0)
 
+                del_btn = Gtk.Button.new_from_icon_name("edit-delete", Gtk.IconSize.BUTTON)
+                del_btn.set_tooltip_text("Delete this vault")
+                del_btn.set_relief(Gtk.ReliefStyle.NONE)
+                del_btn.connect("clicked", self._on_delete_recent, path)
+                box.pack_end(del_btn, False, False, 0)
+
                 row.add(box)
                 row.vault_path = path
                 row.set_activatable(exists)
@@ -228,6 +234,68 @@ class FVaultWindow(Gtk.ApplicationWindow):
 
     # --- Vault operations ---
 
+    def _delete_vault_file(self, vault_path):
+        """Delete a vault file with double confirmation."""
+        name = os.path.basename(vault_path)
+        if not confirm_dialog(
+            self,
+            f"Delete {name}?",
+            f"This will permanently delete the encrypted vault file:\n\n"
+            f"{vault_path}\n\n"
+            f"This cannot be undone.",
+        ):
+            return
+        # Second confirmation — type the vault name
+        dlg = Gtk.Dialog(
+            title="Confirm deletion",
+            transient_for=self, modal=True,
+        )
+        dlg.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "Delete", Gtk.ResponseType.OK,
+        )
+        dlg.set_default_response(Gtk.ResponseType.OK)
+        ok_btn = dlg.get_widget_for_response(Gtk.ResponseType.OK)
+        ok_btn.get_style_context().add_class("destructive-action")
+        ok_btn.set_sensitive(False)
+
+        box = dlg.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        box.pack_start(
+            Gtk.Label(label=f"Type \"{name}\" to confirm:", xalign=0),
+            False, False, 0,
+        )
+        entry = Gtk.Entry()
+        entry.set_activates_default(True)
+
+        def on_changed(e):
+            ok_btn.set_sensitive(e.get_text().strip() == name)
+
+        entry.connect("changed", on_changed)
+        box.pack_start(entry, False, False, 0)
+        box.show_all()
+
+        if dlg.run() == Gtk.ResponseType.OK:
+            dlg.destroy()
+            try:
+                os.remove(vault_path)
+            except OSError as e:
+                error_dialog(self, "Deletion failed", str(e))
+                return
+            config.remove_recent_vault(vault_path)
+            self._refresh_recent()
+        else:
+            dlg.destroy()
+
+    def _on_delete_recent(self, btn, vault_path):
+        """Delete a vault from the recent list row's delete button."""
+        if not os.path.exists(vault_path):
+            config.remove_recent_vault(vault_path)
+            self._refresh_recent()
+            return
+        self._delete_vault_file(vault_path)
+
     def _on_create_vault(self, btn):
         dialog = Gtk.FileChooserDialog(
             title="Select Folder to Encrypt",
@@ -256,6 +324,9 @@ class FVaultWindow(Gtk.ApplicationWindow):
             Gtk.STOCK_SAVE, Gtk.ResponseType.OK,
         )
         save_dialog.set_do_overwrite_confirmation(True)
+        parent_dir = os.path.dirname(folder_path)
+        if parent_dir:
+            save_dialog.set_current_folder(parent_dir)
         save_dialog.set_current_name(os.path.basename(folder_path) + ".vault")
 
         vault_filter = Gtk.FileFilter()
